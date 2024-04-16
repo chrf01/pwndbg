@@ -84,10 +84,27 @@ def nproc() -> int:
     return int(gdb.lookup_global_symbol("nr_cpu_ids").value())
 
 
-@requires_debug_syms(default={})
 def load_kconfig() -> pwndbg.lib.kernel.kconfig.Kconfig:
-    config_start = pwndbg.gdblib.symbol.address("kernel_config_data")
-    config_end = pwndbg.gdblib.symbol.address("kernel_config_data_end")
+    if has_debug_syms():
+        config_start = pwndbg.gdblib.symbol.address("kernel_config_data")
+        config_end = pwndbg.gdblib.symbol.address("kernel_config_data_end")
+    else:
+        base = pwndbg.gdblib.kernel.kbase()
+        ro_mapping = None
+
+        for mapping in pwndbg.gdblib.vmmap.get():
+            if mapping.execute or mapping.write:
+                continue
+            if mapping.vaddr < base:
+                continue
+
+            ro_mapping = mapping
+            break
+
+        result_address = list(pwndbg.search.search(b"IKCFG_ST", mappings=[ro_mapping]))[0]
+        config_start = result_address + len("IKCFG_ST")
+        config_end = list(pwndbg.search.search(b"IKCFG_ED", start=result_address))[0]
+
     if config_start is None or config_end is None:
         return None
     config_size = config_end - config_start
@@ -113,14 +130,29 @@ def kcmdline() -> str:
     return pwndbg.gdblib.memory.string(cmdline_addr).decode("ascii")
 
 
-@requires_debug_syms(default="")
 @pwndbg.lib.cache.cache_until("start")
 def kversion() -> str:
-    version_addr = pwndbg.gdblib.symbol.address("linux_banner")
+    if has_debug_syms():
+        version_addr = pwndbg.gdblib.symbol.address("linux_banner")
+    else:
+        base = kbase()
+        ro_mapping = None
+
+        for mapping in pwndbg.gdblib.vmmap.get():
+            if mapping.execute or mapping.write:
+                continue
+            if mapping.vaddr < base:
+                continue
+
+            ro_mapping = mapping
+            break
+
+        mem = pwndbg.gdblib.memory.read(ro_mapping.vaddr, mapping.memsz)
+        version_addr = mapping.vaddr + mem.find(b"Linux")
+
     return pwndbg.gdblib.memory.string(version_addr).decode("ascii").strip()
 
 
-@requires_debug_syms()
 @pwndbg.lib.cache.cache_until("start")
 def krelease() -> tuple[int, ...]:
     match = re.search(r"Linux version (\d+)\.(\d+)(?:\.(\d+))?", kversion())
